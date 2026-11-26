@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carte-minute vélo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --violet:#4B2A7B; --vert:#4E7A26; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #F4EFEA; font-family: Lexend, system-ui, sans-serif; color: #1E1530; }
+  .barre { max-width: 820px; margin: 0 auto; padding: 12px 14px 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .barre input, .barre select, .barre button { font: inherit; font-size: 15px; min-height: 44px; padding: 8px 12px; border-radius: 10px; border: 1px solid #C9BFD9; background: #fff; color: #1E1530; }
+  .barre input { flex: 1 1 200px; }
+  .barre button { background: var(--violet); color: #fff; border: none; font-weight: 600; }
+  .barre button.sec { background: #fff; color: var(--violet); border: 1px solid var(--violet); }
+  #resultats { max-width: 820px; margin: 0 auto; padding: 0 14px; display: flex; flex-direction: column; gap: 6px; }
+  #resultats button { font: inherit; font-size: 14px; text-align: left; min-height: 44px; padding: 8px 12px; border-radius: 10px; border: 1px solid #C9BFD9; background: #fff; color: #1E1530; cursor: pointer; }
+  #resultats button:hover { border-color: var(--violet); }
+  #etat { max-width: 820px; margin: 0 auto; padding: 6px 14px 10px; font-size: 14px; color: #3D3550; min-height: 1.6em; }
+  .affiche { max-width: 820px; margin: 0 auto 32px; padding: 0 10px; }
+  svg#carte { width: 100%; height: auto; display: block; box-shadow: 0 2px 16px rgba(0,0,0,.12); }
+  @media print {
+    @page { size: A4; margin: 0; }
+    body { background: #fff; }
+    .barre, #resultats, #etat { display: none; }
+    .affiche { max-width: none; padding: 0; margin: 0; }
+    svg#carte { width: 210mm; height: 297mm; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<form class="barre" id="recherche">
+  <label for="q" style="position:absolute;left:-9999px">Commune</label>
+  <input id="q" type="search" placeholder="Commune (ex. Waremme, Chastre, Hannut…)" autocomplete="off">
+  <button type="submit">Chercher</button>
+</form>
+<div id="resultats"></div>
+<div class="barre">
+  <label for="profil" style="font-size:15px">Profil BRouter</label>
+  <select id="profil">
+    <option value="trekking">trekking</option>
+    <option value="safety">safety (petites routes)</option>
+    <option value="fastbike">fastbike (direct)</option>
+  </select>
+  <button id="recalc" type="button" class="sec">Recalculer</button>
+  <button id="imprimer" type="button" class="sec">Imprimer / PDF</button>
+</div>
+<div id="etat" role="status">Chargement…</div>
+<div class="affiche">
+  <svg id="carte" viewBox="0 0 794 1123" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Carte-minute vélo"></svg>
+</div>
+
+<script>
+/* ================== Réglages ================== */
+const VAE = 20, CLASSIQUE = 15;          // km/h
+const MAX_VILLAGES = 15;                  // lieux internes maximum
+const NOMINATIM = "https://nominatim.openstreetmap.org/search";
+const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+const BROUTER = "https://brouter.de/brouter";
+const C = { violet:"#4B2A7B", vert:"#4E7A26", orange:"#E8772E", jaune:"#F7E39A", texte:"#1E1530", gris:"#5A5266" };
+const BOITE = { x0:150, y0:250, x1:644, y1:770 };   // zone de la commune sur l'affiche
+const CADRE = { x0:110, y0:205, x1:684, y1:830 };   // limite des flèches vers les voisins
+
+/* ================== Outils ================== */
+const $ = id => document.getElementById(id);
+const etat = t => { $("etat").textContent = t; };
+const pause = ms => new Promise(r => setTimeout(r, ms));
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+function kmEntre(a, b) {
+  const R = 6371, r = Math.PI / 180;
+  const d = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(d));
+}
+const minutes = (km, v) => Math.max(1, Math.round(km / v * 60));
+const echapper = s => s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+/* ================== Recherche de commune (Nominatim) ================== */
+async function chercherCommunes(q) {
+  const url = `${NOMINATIM}?format=jsonv2&limit=10&accept-language=fr&q=${encodeURIComponent(q)}`;
+  const r = await fetch(url); if (!r.ok) throw new Error("Nominatim HTTP " + r.status);
+  const res = await r.json();
+  return res.filter(x => x.osm_type === "relation" && x.category === "boundary" && x.type === "administrative");
+}
+
+/* ================== Données OpenStreetMap (Overpass) ================== */
+async function overpass(requete) {
+  let derniere;
+  for (const url of OVERPASS) {
+    try {
+      const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(requete), headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+      if (r.ok) return (await r.json()).elements;
+      derniere = new Error("Overpass HTTP " + r.status);
+    } catch (e) { derniere = e; }
+  }
+  throw derniere;
+}
+
+function assemblerAnneaux(ways) {
+  const eq = (a, b) => Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) < 1e-7;
+  let segs = ways.map(w => w.geometry.map(p => [p.lat, p.lon]));
+  const anneaux = [];
+  while (segs.length) {
+    let r = segs.shift(), change = true;
+    while (change && !(r.length > 3 && eq(r[0], r[r.length - 1]))) {
+      change = false;
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i], deb = r[0], fin = r[r.length - 1];
+        if (eq(fin, s[0])) r = r.concat(s.slice(1));
+        else if (eq(fin, s[s.length - 1])) r = r.concat(s.slice(0, -1).reverse());
+        else if (eq(deb, s[s.length - 1])) r = s.slice(0, -1).concat(r);
+        else if (eq(deb, s[0])) r = s.slice(1).reverse().concat(r);
+        else continue;
+        segs.splice(i, 1); change = true; break;
+      }
+    }
+    anneaux.push(r.map(([lat, lon]) => ({ lat, lon })));
+  }
+  return anneaux;
+}
+function dansPolygone(p, anneaux) {
+  let dedans = false;
+  for (const a of anneaux) for (let i = 0, j = a.length - 1; i < a.length; j = i++) {
+    const xi = a[i].lon, yi = a[i].lat, xj = a[j].lon, yj = a[j].lat;
+    if ((yi > p.lat) !== (yj > p.lat) && p.lon < (xj - xi) * (p.lat - yi) / (yj - yi) + xi) dedans = !dedans;
+  }
+  return dedans;
+}
+
+async function chargerCommune(relId) {
+  const cache = store.get("cmv-donnees-" + relId);
+  if (cache && cache.v === 2) return cache;
+  etat("Lecture de la commune dans OpenStreetMap…");
+  const meta = (await overpass(`[out:json][timeout:30];rel(${relId});out tags;`))[0];
+  if (!meta) throw new Error("Commune introuvable");
+  const niveau = meta.tags.admin_level || "8";
+  etat("Lecture des villages, voisins et gares…");
+  const el = await overpass(`[out:json][timeout:120];
+rel(${relId})->.c;
+.c out geom;
+.c map_to_area->.a;
+node(area.a)[place~"^(city|town|village)$"]->.p;
+.p out;
+way(r.c)->.w;
+rel(bw.w)[boundary=administrative][admin_level="${niveau}"]->.n;
+(.n; - .c;)->.n2;
+.n2 out tags center;
+node(r.n2:"admin_centre")->.nac;
+.nac out;
+(.p; .nac;)->.tous;
+node(around.tous:1200)[railway=station];
+out;`);
+  const rel = el.find(e => e.type === "relation" && e.id === relId);
+  const anneaux = assemblerAnneaux(rel.members.filter(m => m.type === "way" && m.geometry && m.role !== "inner"));
+  const centreId = (rel.members.find(m => m.type === "node" && m.role === "admin_centre") || {}).ref;
+  const noeuds = el.filter(e => e.type === "node");
+  const gares = noeuds.filter(n => n.tags && n.tags.railway === "station" && !/subway|light_rail|monorail/.test(n.tags.station || ""))
+                      .map(n => ({ lat: n.lat, lon: n.lon }));
+  const lieuxNodes = noeuds.filter(n => n.tags && n.tags.place && n.tags.name);
+  const rang = n => ({ city: 3, town: 2, village: 1 }[n.tags.place] || 0) * 1e7 + (parseInt(n.tags.population) || 0);
+  let internes = lieuxNodes.filter(n => /^(city|town|village)$/.test(n.tags.place) && dansPolygone(n, anneaux));
+  internes.sort((a, b) => (b.id === centreId) - (a.id === centreId) || rang(b) - rang(a));
+  internes = internes.slice(0, MAX_VILLAGES);
+  if (!internes.length) throw new Error("Aucun village trouvé dans cette commune");
+  const centre = internes.find(n => n.id === centreId) || internes[0];
+  const externes = lieuxNodes.filter(n => !dansPolygone(n, anneaux));
+  const voisins = el.filter(e => e.type === "relation" && e.id !== relId && e.center).map(r => {
+    const nomR = r.tags["name:fr"] || r.tags.name;
+    let n = externes.find(x => x.tags.name === r.tags.name || x.tags["name:fr"] === nomR);
+    if (!n) { const proches = externes.filter(x => kmEntre(x, r.center) < 6).sort((a, b) => kmEntre(a, r.center) - kmEntre(b, r.center)); n = proches[0]; }
+    const p = n ? { lat: n.lat, lon: n.lon } : r.center;
+    return { id: "v" + r.id, nom: nomR, lat: p.lat, lon: p.lon };
+  });
+  const donnees = {
+    v: 2, relId, nom: meta.tags["name:fr"] || meta.tags.name, anneaux,
+    lieux: internes.map(n => ({ id: "n" + n.id, nom: n.tags["name:fr"] || n.tags.name, lat: n.lat, lon: n.lon, centre: n === centre })),
+    voisins, gares
+  };
+  store.set("cmv-donnees-" + relId, donnees);
+  return donnees;
+}
+
+/* ================== Réseau et mise en page ================== */
+function construire(d) {
+  // projection
+  const tous = [...d.lieux, ...d.anneaux.flat()];
+  const lat0 = tous.reduce((s, p) => s + p.lat, 0) / tous.length, kx = Math.cos(lat0 * Math.PI / 180);
+  const xs = tous.map(p => p.lon * kx), ys = tous.map(p => p.lat);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const ech = Math.min((BOITE.x1 - BOITE.x0) / Math.max(maxX - minX, 1e-6), (BOITE.y1 - BOITE.y0) / Math.max(maxY - minY, 1e-6));
+  const cx = (BOITE.x0 + BOITE.x1) / 2, cy = (BOITE.y0 + BOITE.y1) / 2, mx = (minX + maxX) / 2, my = (minY + maxY) / 2;
+  const proj = p => ({ x: cx + (p.lon * kx - mx) * ech, y: cy - (p.lat - my) * ech });
+
+  const lieux = d.lieux.map(l => ({ ...l, ...proj(l) }));
+  lieux.forEach(l => { l.gare = d.gares.some(g => kmEntre(g, l) < 1.2); });
+  // écarte les villages trop proches (carte schématique) pour laisser la place aux textes
+  const ECART = 70;
+  for (let it = 0; it < 120; it++) {
+    let bouge = false;
+    for (let i = 0; i < lieux.length; i++) for (let j = i + 1; j < lieux.length; j++) {
+      const a = lieux[i], b = lieux[j];
+      let dx = b.x - a.x, dy = b.y - a.y, dd = Math.hypot(dx, dy);
+      if (dd >= ECART) continue;
+      if (dd < 0.01) { dx = 1; dy = 0; dd = 1; }
+      const p = (ECART - dd) / 2 + 0.5, ux = dx / dd, uy = dy / dd;
+      a.x -= ux * p; a.y -= uy * p; b.x += ux * p; b.y += uy * p; bouge = true;
+    }
+    for (const l of lieux) { l.x = Math.min(BOITE.x1 + 20, Math.max(BOITE.x0 - 20, l.x)); l.y = Math.min(BOITE.y1 + 20, Math.max(BOITE.y0 - 20, l.y)); }
+    if (!bouge) break;
+  }
+
+  // liaisons internes : graphe de Gabriel (pas de 3e lieu dans le cercle de diamètre AB)
+  const liens = [];
+  for (let i = 0; i < lieux.length; i++) for (let j = i + 1; j < lieux.length; j++) {
+    const a = lieux[i], b = lieux[j], m = { lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 }, r = kmEntre(a, b) / 2;
+    if (!lieux.some((c, k) => k !== i && k !== j && kmEntre(c, m) < r)) liens.push({ a, b, interne: true });
+  }
+
+  // voisins : flèche depuis le lieu interne le plus proche
+  const sorties = [];
+  const fins = [];
+  for (const v of d.voisins) {
+    const o = lieux.reduce((best, l) => kmEntre(l, v) < kmEntre(best, v) ? l : best, lieux[0]);
+    const p = proj(v);
+    let ang = Math.atan2(p.y - o.y, p.x - o.x);
+    // éviter que deux flèches se superposent
+    for (let essai = 0; essai < 12; essai++) {
+      const proche = fins.find(f => f.o === o && Math.abs(Math.atan2(Math.sin(f.ang - ang), Math.cos(f.ang - ang))) < 0.5);
+      if (!proche) break;
+      ang += (Math.atan2(Math.sin(ang - proche.ang), Math.cos(ang - proche.ang)) >= 0 ? 1 : -1) * 0.2;
+    }
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    const tMax = Math.min(dx > 0 ? (CADRE.x1 - o.x) / dx : dx < 0 ? (CADRE.x0 - o.x) / dx : 1e9,
+                          dy > 0 ? (CADRE.y1 - o.y) / dy : dy < 0 ? (CADRE.y0 - o.y) / dy : 1e9);
+    const reel = Math.hypot(p.x - o.x, p.y - o.y);
+    const t = Math.max(Math.min(reel, tMax - 8), Math.min(80, tMax - 8));
+    const fin = { x: o.x + dx * t, y: o.y + dy * t };
+    fins.push({ o, ang });
+    const b = { ...v, ...fin, ang, gare: d.gares.some(g => kmEntre(g, v) < 1.2) };
+    sorties.push({ a: o, b, interne: false });
+  }
+  return { nom: d.nom, relId: d.relId, lieux, liens, sorties, anneaux: d.anneaux.map(r => r.map(proj)) };
+}
+
+/* ================== Dessin ================== */
+const NS = "http://www.w3.org/2000/svg";
+const svg = $("carte");
+function el(tag, attrs = {}, parent = svg, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  parent.appendChild(e); return e;
+}
+function train(x, y, parent = svg) {
+  const g = el("g", { transform: `translate(${x},${y}) scale(0.75)`, fill: "none", stroke: C.violet, "stroke-width": 2.4, "stroke-linecap": "round", "stroke-linejoin": "round" }, parent);
+  el("rect", { x: 5, y: 3, width: 14, height: 13, rx: 3 }, g);
+  el("path", { d: "M5 10h14M8 20l2-4M16 20l-2-4" }, g);
+}
+const cleLien = l => l.a.id + "|" + l.b.id;
+
+function dessiner(M, km, source, profil) {
+  svg.innerHTML = "";
+  svg.setAttribute("aria-label", `Carte-minute vélo de ${M.nom}`);
+  el("defs").innerHTML = `<marker id="fleche" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10" fill="none" stroke="${C.vert}" stroke-width="2.2"/></marker>`;
+  el("rect", { x: 0, y: 0, width: 794, height: 1123, fill: C.orange });
+  el("path", { d: "M142 22 H750 a22 22 0 0 1 22 22 V941 a160 160 0 0 1 -160 160 H44 a22 22 0 0 1 -22 -22 V142 a120 120 0 0 1 120 -120 Z", fill: "#fff" });
+  const titre = el("text", { x: 397, y: 96, "text-anchor": "middle", "font-size": 44, "font-weight": 700, fill: C.violet }, svg, `Carte-minute vélo de ${M.nom}`);
+  const lt = titre.getBBox().width; if (lt > 690) titre.setAttribute("font-size", Math.floor(44 * 690 / lt));
+  el("text", { x: 397, y: 136, "text-anchor": "middle", "font-size": 22, "font-weight": 500, fill: C.violet }, svg, "« À vélo, c’est plus près qu’on ne croit ! »");
+
+  // contour de la commune
+  const dPath = M.anneaux.map(r => {
+    const pts = []; let last = null;
+    for (const p of r) if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 2) { pts.push(p); last = p; }
+    return "M" + pts.map(p => p.x.toFixed(1) + " " + p.y.toFixed(1)).join("L") + "Z";
+  }).join("");
+  el("path", { d: dPath, fill: C.jaune, "fill-rule": "evenodd", stroke: "#EAD27A", "stroke-width": 1.5, "stroke-linejoin": "round" });
+
+  const dense = M.lieux.length > 10;
+  const fsTemps = dense ? 13 : 15, fsLieu = dense ? 15 : 18, fsVoisin = dense ? 14 : 17;
+  for (const s of M.sorties) el("line", { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y, stroke: C.vert, "stroke-width": 4, "stroke-dasharray": "1 9", "stroke-linecap": "round", "marker-end": "url(#fleche)" });
+  for (const l of M.liens) el("line", { x1: l.a.x, y1: l.a.y, x2: l.b.x, y2: l.b.y, stroke: C.violet, "stroke-width": 5, "stroke-linecap": "round" });
+
+  // --- placement des étiquettes sans chevauchement ---
+  // obstacles = rectangles orientés {cx, cy, w, h, a}
+  const segs = [...M.sorties, ...M.liens].map(l => [l.a.x, l.a.y, l.b.x, l.b.y]);
+  const obst = M.lieux.map(l => ({ cx: l.x, cy: l.y, w: l.centre ? 30 : 24, h: l.centre ? 30 : 24, a: 0 }));
+  const LIM = { x0: 34, y0: 158, x1: 760, y1: 856 };
+  const local = (o, x, y) => { const dx = x - o.cx, dy = y - o.cy, c = Math.cos(o.a), s = Math.sin(o.a); return [dx * c + dy * s, -dx * s + dy * c]; };
+  const dans = (o, x, y) => { const [lx, ly] = local(o, x, y); return Math.abs(lx) <= o.w / 2 && Math.abs(ly) <= o.h / 2; };
+  const coins = o => [[-1,-1],[1,-1],[1,1],[-1,1]].map(([i, j]) => { const c = Math.cos(o.a), s = Math.sin(o.a), x = i * o.w / 2, y = j * o.h / 2; return [o.cx + x * c - y * s, o.cy + x * s + y * c]; });
+  const echantillons = o => { const pts = []; for (let i = 0; i < 9; i++) for (let j = 0; j < 3; j++) { const x = (i / 8 - 0.5) * o.w, y = (j / 2 - 0.5) * o.h, c = Math.cos(o.a), s = Math.sin(o.a); pts.push([o.cx + x * c - y * s, o.cy + x * s + y * c]); } return pts; };
+  const croise = (a, b, c, d) => {
+    const or = (p, q, r) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+    return or(a, b, c) !== or(a, b, d) && or(c, d, a) !== or(c, d, b);
+  };
+  const toucheSeg = (o, sg) => {
+    const p = local(o, sg[0], sg[1]), q = local(o, sg[2], sg[3]), W = o.w / 2, H = o.h / 2;
+    const inn = ([x, y]) => Math.abs(x) <= W && Math.abs(y) <= H;
+    if (inn(p) || inn(q)) return true;
+    const c = [[-W, -H], [W, -H], [W, H], [-W, H]];
+    return [0, 1, 2, 3].some(i => croise(p, q, c[i], c[(i + 1) % 4]));
+  };
+  function cout(o, sauf) {
+    let sc = 0;
+    for (const [x, y] of coins(o)) sc += 400 * (Math.max(0, LIM.x0 - x) + Math.max(0, x - LIM.x1) + Math.max(0, LIM.y0 - y) + Math.max(0, y - LIM.y1));
+    for (const [x, y] of echantillons(o)) for (const q of obst) if (dans(q, x, y)) { sc += 25; break; }
+    for (const q of obst) for (const [x, y] of echantillons(q)) if (dans(o, x, y)) { sc += 25; break; }
+    segs.forEach((sg, i) => { if (i !== sauf && toucheSeg(o, sg)) sc += 60; });
+    return sc;
+  }
+  // noms : essaie 24 directions × 3 distances autour du point
+  function placerNom(t, px, py, rayon, prefAng, taille, gare) {
+    let best = null;
+    for (const dr of [0, 10, 22]) for (let i = 0; i < 24; i++) {
+      const ang = prefAng + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * Math.PI / 12;
+      const ux = Math.cos(ang), uy = Math.sin(ang), R = rayon + dr;
+      const anc = ux > 0.35 ? "start" : ux < -0.35 ? "end" : "middle";
+      const x = px + ux * R, y = py + uy * R + (uy > 0.35 ? taille * 0.8 : uy < -0.35 ? -2 : taille * 0.35);
+      t.setAttribute("x", x); t.setAttribute("y", y); t.setAttribute("text-anchor", anc);
+      const bb = t.getBBox(), gx = gare ? 20 : 0;
+      const bx = anc === "end" ? bb.x - gx : bb.x;
+      const o = { cx: bx + (bb.width + gx) / 2, cy: bb.y + bb.height / 2, w: bb.width + gx + 6, h: bb.height + 2, a: 0 };
+      const sc = cout(o, -1) + Math.ceil(i / 2) * 3 + dr * 2;
+      if (!best || sc < best.sc) best = { sc, x, y, anc, o };
+      if (sc === 0) break;
+    }
+    t.setAttribute("x", best.x); t.setAttribute("y", best.y); t.setAttribute("text-anchor", best.anc);
+    obst.push(best.o);
+    if (gare) { const bb = t.getBBox(); train(best.anc === "end" ? bb.x - 19 : bb.x + bb.width + 3, bb.y + bb.height / 2 - 9); }
+  }
+
+  const centre = M.lieux.find(l => l.centre) || M.lieux[0];
+  // ronds des lieux
+  for (const l of M.lieux) el("circle", { cx: l.x, cy: l.y, r: l.centre ? 13 : 10, fill: "#fff", stroke: C.violet, "stroke-width": l.centre ? 5 : 4 });
+
+  // 1) noms des villages (le chef-lieu d'abord)
+  const ordre = [...M.lieux].sort((a, b) => b.centre - a.centre);
+  for (const l of ordre) {
+    let sx = 0, sy = 0;
+    for (const e of [...M.liens, ...M.sorties]) {
+      const autre = e.a === l ? e.b : e.b === l ? e.a : null; if (!autre) continue;
+      const dd = Math.hypot(autre.x - l.x, autre.y - l.y) || 1; sx += (autre.x - l.x) / dd; sy += (autre.y - l.y) / dd;
+    }
+    const pref = Math.hypot(sx, sy) < 0.3 ? -Math.PI / 2 : Math.atan2(-sy, -sx);
+    const taille = l.centre ? fsLieu + 8 : fsLieu;
+    const t = el("text", { "font-size": taille, "font-weight": 700, fill: C.texte, stroke: "#fff", "stroke-width": 4, "paint-order": "stroke" }, svg, l.nom);
+    placerNom(t, l.x, l.y, (l.centre ? 13 : 10) + 6, pref, taille, l.gare);
+  }
+  // 2) noms des communes voisines (au bout des flèches)
+  for (const s of M.sorties) {
+    const t = el("text", { "font-size": fsVoisin, "font-weight": 700, fill: C.vert, stroke: "#fff", "stroke-width": 4, "paint-order": "stroke" }, svg, s.b.nom);
+    placerNom(t, s.b.x, s.b.y, 12, s.b.ang, fsVoisin, s.b.gare);
+  }
+  // 3) temps : glissent le long de leur trait et changent de côté pour éviter le reste
+  const g = el("g");
+  const tous = [...M.liens, ...M.sorties];
+  const longs = [...tous.keys()].sort((i, j) => Math.hypot(tous[i].b.x - tous[i].a.x, tous[i].b.y - tous[i].a.y) - Math.hypot(tous[j].b.x - tous[j].a.x, tous[j].b.y - tous[j].a.y));
+  for (const idx of longs) {
+    const l = tous[idx], k = km[cleLien(l)], iSeg = M.sorties.length + 0;
+    const segIndex = segs.findIndex(sg => sg[0] === l.a.x && sg[1] === l.a.y && sg[2] === l.b.x && sg[3] === l.b.y);
+    let ang = Math.atan2(l.b.y - l.a.y, l.b.x - l.a.x);
+    let deg = ang * 180 / Math.PI; if (deg > 90) deg -= 180; if (deg < -90) deg += 180;
+    const r = deg * Math.PI / 180, nx = Math.sin(r), ny = -Math.cos(r);
+    let fs = fsTemps, best = null, t;
+    for (let essai = 0; essai < 3 && (!best || best.sc > 0); essai++) {
+      if (t) t.remove();
+      t = el("text", { x: 0, y: 0, "text-anchor": "middle", "dominant-baseline": "middle", "font-size": fs, "font-weight": 500, fill: l.interne ? C.violet : C.vert, stroke: "#fff", "stroke-width": 4, "paint-order": "stroke" }, g);
+      el("tspan", {}, t, `${minutes(k, VAE)}-`); el("tspan", { "font-weight": 700 }, t, `${minutes(k, CLASSIQUE)}`); el("tspan", {}, t, " min");
+      const bb = t.getBBox();
+      const mx0 = (l.a.x + l.b.x) / 2, my0 = (l.a.y + l.b.y) / 2;
+      const prefCote = (nx * (mx0 - centre.x) + ny * (my0 - centre.y)) >= 0 ? 1 : -1;
+      best = null;
+      for (const f of [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74]) for (const cote of [prefCote, -prefCote]) {
+        const mx = l.a.x + (l.b.x - l.a.x) * f, my = l.a.y + (l.b.y - l.a.y) * f;
+        const x = mx + cote * (bb.height / 2 + 4) * nx, y = my + cote * (bb.height / 2 + 4) * ny;
+        const o = { cx: x, cy: y, w: bb.width + 4, h: bb.height, a: r };
+        const sc = cout(o, segIndex) + Math.abs(f - 0.5) * 20 + (cote === prefCote ? 0 : 4);
+        if (!best || sc < best.sc) best = { sc, x, y, o };
+      }
+      fs -= 1.5;
+    }
+    t.setAttribute("x", best.x); t.setAttribute("y", best.y);
+    t.setAttribute("transform", `rotate(${deg.toFixed(1)} ${best.x} ${best.y})`);
+    obst.push(best.o);
+  }
+
+  // exemple : un voisin atteint en passant par au moins un village
+  const dist = new Map([[centre.id, { t: 0, chemin: [centre] }]]), file = [centre];
+  while (file.length) {
+    file.sort((a, b) => dist.get(a.id).t - dist.get(b.id).t);
+    const u = file.shift();
+    for (const e of M.liens) {
+      const v = e.a === u ? e.b : e.b === u ? e.a : null; if (!v) continue;
+      const t = dist.get(u.id).t + minutes(km[cleLien(e)], CLASSIQUE);
+      if (!dist.has(v.id) || t < dist.get(v.id).t) { dist.set(v.id, { t, chemin: [...dist.get(u.id).chemin, v] }); file.push(v); }
+    }
+  }
+  const cand = M.sorties.filter(s => s.a !== centre && dist.has(s.a.id))
+    .map(s => ({ s, chemin: [...dist.get(s.a.id).chemin, s.b] }))
+    .sort((x, y) => x.chemin.length - y.chemin.length || (dist.get(x.s.a.id).t + minutes(km[cleLien(x.s)], CLASSIQUE)) - (dist.get(y.s.a.id).t + minutes(km[cleLien(y.s)], CLASSIQUE)))[0];
+  if (cand) {
+    const ch = cand.chemin, etapes = [];
+    for (let i = 0; i < ch.length - 1; i++) {
+      const e = [...M.liens, ...M.sorties].find(e => (e.a === ch[i] && e.b === ch[i + 1]) || (e.b === ch[i] && e.a === ch[i + 1]));
+      etapes.push(minutes(km[cleLien(e)], CLASSIQUE));
+    }
+    const ex = el("text", { x: 56, y: 876, "font-size": 15, fill: C.texte });
+    el("tspan", { "font-weight": 700, fill: C.violet }, ex, "Exemple : ");
+    el("tspan", {}, ex, `${ch[0].nom} – ${ch.at(-1).nom} = ${ch.map(p => p.nom).join(" – ")}, soit ${etapes.map(m => m + "′").join(" + ")} = `);
+    el("tspan", { "font-weight": 700 }, ex, `${etapes.reduce((a, b) => a + b, 0)} minutes`);
+    const w = ex.getBBox().width; if (w > 682) ex.setAttribute("font-size", (15 * 682 / w).toFixed(1));
+  }
+
+  // légende
+  el("text", { x: 56, y: 924, "font-size": 18, "font-weight": 700, fill: C.violet }, svg, "Légende");
+  el("line", { x1: 56, y1: 948, x2: 90, y2: 948, stroke: C.violet, "stroke-width": 5, "stroke-linecap": "round" });
+  el("text", { x: 100, y: 953, "font-size": 14, fill: C.texte }, svg, "Liaison entre villages");
+  el("line", { x1: 56, y1: 976, x2: 90, y2: 976, stroke: C.vert, "stroke-width": 4, "stroke-dasharray": "1 8", "stroke-linecap": "round" });
+  el("text", { x: 100, y: 981, "font-size": 14, fill: C.texte }, svg, "Vers les communes voisines");
+  train(58, 994); el("text", { x: 100, y: 1009, "font-size": 14, fill: C.texte }, svg, "Gare");
+  el("text", { x: 330, y: 924, "font-size": 18, "font-weight": 700, fill: C.violet }, svg, "Temps de trajet indicatifs");
+  const l1 = el("text", { x: 330, y: 953, "font-size": 14, fill: C.texte });
+  el("tspan", {}, l1, "• Vélo classique, en "); el("tspan", { "font-weight": 700 }, l1, "gras"); el("tspan", {}, l1, ` : ${CLASSIQUE} km/h`);
+  el("text", { x: 330, y: 981, "font-size": 14, fill: C.texte }, svg, `• Vélo à assistance électrique : ${VAE} km/h`);
+  const vals = Object.values(source), nb = vals.filter(s => s === "brouter").length;
+  const note = nb === vals.length ? `Distances calculées avec BRouter (profil ${profil}),`
+             : nb === 0 ? "Distances estimées (calcul BRouter en attente)," : `Distances BRouter pour ${nb}/${vals.length} tronçons, les autres estimées,`;
+  el("text", { x: 330, y: 1009, "font-size": 12, fill: C.gris }, svg, note);
+  el("text", { x: 330, y: 1025, "font-size": 12, fill: C.gris }, svg, "données © les contributeurs d’OpenStreetMap.");
+}
+
+/* ================== BRouter ================== */
+async function brouterKm(a, b, profil) {
+  const url = `${BROUTER}?lonlats=${a.lon},${a.lat}|${b.lon},${b.lat}&profile=${profil}&alternativeidx=0&format=geojson`;
+  const r = await fetch(url); if (!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json();
+  return Number(j.features[0].properties["track-length"]) / 1000;
+}
+
+let carte = null, jeton = 0;
+async function calculerTemps(M, profil, forcer) {
+  const moi = ++jeton;
+  const troncons = [...M.liens, ...M.sorties];
+  const km = {}, source = {};
+  for (const l of troncons) { km[cleLien(l)] = kmEntre(l.a, l.b) * 1.25; source[cleLien(l)] = "estimation"; }
+  const cleCache = `cmv-km-${M.relId}-${profil}`;
+  const memo = (!forcer && store.get(cleCache)) || {};
+  for (const k in memo) if (k in km) { km[k] = memo[k]; source[k] = "brouter"; }
+  dessiner(M, km, source, profil);
+  let erreurs = 0, i = 0;
+  for (const l of troncons) {
+    i++; const k = cleLien(l);
+    if (source[k] === "brouter") continue;
+    if (moi !== jeton) return;
+    etat(`${M.nom} : calcul BRouter ${i}/${troncons.length} (${l.a.nom} – ${l.b.nom})…`);
+    try { km[k] = await brouterKm(l.a, l.b, profil); source[k] = "brouter"; memo[k] = km[k]; store.set(cleCache, memo); }
+    catch { erreurs++; }
+    if (moi !== jeton) return;
+    dessiner(M, km, source, profil);
+    await pause(350);
+  }
+  etat(erreurs ? `${M.nom} : ${erreurs} tronçon(s) non calculé(s) par BRouter, temps estimés pour ceux-là.`
+               : `${M.nom} : ${M.lieux.length} lieux, ${M.sorties.length} communes voisines, temps BRouter (profil ${profil}).`);
+}
+
+/* ================== Interface ================== */
+async function ouvrir(relId) {
+  $("resultats").innerHTML = "";
+  try {
+    const d = window.DONNEES_TEST || await chargerCommune(relId);
+    carte = construire(d);
+    document.title = `Carte-minute vélo de ${carte.nom}`;
+    try { const u = new URL(location.href); u.searchParams.set("rel", relId); u.searchParams.delete("q"); history.replaceState(null, "", u); } catch {}
+    if (window.DONNEES_TEST) { calculerTemps(carte, $("profil").value, false); return; }
+    await calculerTemps(carte, $("profil").value, false);
+  } catch (e) { etat("Erreur : " + e.message + ". Réessayez dans un instant."); }
+}
+
+$("recherche").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const q = $("q").value.trim(); if (!q) return;
+  etat("Recherche…"); $("resultats").innerHTML = "";
+  try {
+    const res = await chercherCommunes(q);
+    if (!res.length) { etat("Aucune commune trouvée. Essayez avec le pays, ex. « Chastre, Belgique »."); return; }
+    if (res.length === 1) return ouvrir(res[0].osm_id);
+    etat("Choisissez la commune :");
+    for (const r of res) {
+      const b = document.createElement("button"); b.type = "button";
+      b.textContent = r.display_name;
+      b.addEventListener("click", () => ouvrir(r.osm_id));
+      $("resultats").appendChild(b);
+    }
+  } catch (e) { etat("Erreur de recherche : " + e.message); }
+});
+$("profil").addEventListener("change", () => carte && calculerTemps(carte, $("profil").value, false));
+$("recalc").addEventListener("click", () => carte && calculerTemps(carte, $("profil").value, true));
+$("imprimer").addEventListener("click", () => window.print());
+
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(async () => {
+  const p = new URLSearchParams(location.search);
+  if (window.DONNEES_TEST) return ouvrir(window.DONNEES_TEST.relId);
+  if (p.get("rel")) return ouvrir(Number(p.get("rel")));
+  const q = p.get("q") || "Waremme, Belgique";
+  $("q").value = q.split(",")[0];
+  try {
+    const res = await chercherCommunes(q);
+    if (res.length) return ouvrir(res[0].osm_id);
+    etat("Cherchez une commune ci-dessus.");
+  } catch (e) { etat("Cherchez une commune ci-dessus. (" + e.message + ")"); }
+});
+</script>
+</body>
+</html>

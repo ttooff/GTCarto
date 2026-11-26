@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distances et temps cyclables</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --rouge:#C8102E; --orange:#E8772E; --violet:#6B2FA0; --bleu:#1F4E9A; --nuit:#14213D; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #EEF1F4; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #14213D; }
+  .barre { max-width: 960px; margin: 0 auto; padding: 10px 12px 2px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .barre input, .barre select, .barre button { font: inherit; font-size: 15px; min-height: 44px; padding: 8px 12px; border-radius: 10px; border: 1px solid #B8C2D0; background: #fff; color: #14213D; }
+  .barre input[type=search] { flex: 1 1 220px; }
+  .barre input[type=number] { width: 76px; }
+  .barre button { background: var(--nuit); color: #fff; border: none; font-weight: 600; }
+  .barre button.sec { background: #fff; color: var(--nuit); border: 1px solid var(--nuit); }
+  .barre label { font-size: 14px; }
+  #resultats { max-width: 960px; margin: 0 auto; padding: 0 12px; display: flex; flex-direction: column; gap: 6px; }
+  #resultats button { font: inherit; font-size: 14px; text-align: left; min-height: 44px; padding: 8px 12px; border-radius: 10px; border: 1px solid #B8C2D0; background: #fff; color: #14213D; cursor: pointer; }
+  #etat { max-width: 960px; margin: 0 auto; padding: 6px 12px 10px; font-size: 14px; color: #3B4A60; min-height: 1.6em; }
+  .affiche { max-width: 960px; margin: 0 auto 28px; padding: 0 8px; }
+  .titre { background: #fff; border: 3px solid var(--nuit); border-bottom: none; padding: 10px 16px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .titre h1 { margin: 0; font-size: clamp(20px, 4vw, 30px); color: var(--nuit); }
+  .titre span { font-size: clamp(14px, 2.6vw, 20px); font-weight: 600; color: var(--rouge); }
+  #carte { width: 100%; aspect-ratio: 1 / 1.05; border: 3px solid var(--nuit); background: #dde; }
+  /* étiquettes */
+  .etq { background: none; border: none; }
+  .etq > div { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; }
+  .village { background: var(--nuit); color: #fff; font-weight: 700; font-size: 13px; padding: 3px 8px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+  .village.centre { font-size: 15px; padding: 4px 10px; }
+  .voisin { background: #fff; color: var(--nuit); font-weight: 700; font-size: 13px; padding: 3px 8px; border-radius: 6px; border: 1.5px solid var(--nuit); }
+  .dist { background: #fff; border: 1.5px solid #7C8BA1; border-radius: 6px; padding: 2px 6px; text-align: center; line-height: 1.15; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+  .dist .km { color: var(--bleu); font-weight: 800; font-size: 13px; }
+  .dist .t { font-size: 12px; font-weight: 700; }
+  .cl { color: var(--rouge); } .vae { color: var(--violet); }
+  .dist.estime { border-style: dashed; }
+  .legende { background: #fff; border: 2px solid var(--nuit); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.5; color: #14213D; max-width: 210px; }
+  .legende h2 { margin: 0 0 4px; font-size: 14px; background: var(--nuit); color: #fff; padding: 2px 6px; border-radius: 3px; }
+  .legende .l { display: flex; align-items: center; gap: 6px; }
+  .legende .sw { display: inline-block; width: 26px; flex: none; }
+  .nord { background: none; }
+  @media print {
+    @page { size: A4 portrait; margin: 8mm; }
+    body { background: #fff; }
+    .barre, #resultats, #etat { display: none; }
+    .affiche { max-width: none; padding: 0; margin: 0; }
+    #carte { aspect-ratio: auto; height: 250mm; }
+    .leaflet-control-zoom { display: none; }
+  }
+</style>
+</head>
+<body>
+<form class="barre" id="recherche">
+  <label for="q" style="position:absolute;left:-9999px">Commune</label>
+  <input id="q" type="search" placeholder="Commune (ex. Courcelles, Waremme…)" autocomplete="off">
+  <button type="submit">Chercher</button>
+</form>
+<div id="resultats"></div>
+<div class="barre">
+  <label for="vcl">Classique</label><input id="vcl" type="number" min="5" max="40" step="1" value="14"><span style="font-size:14px">km/h</span>
+  <label for="vvae">Électrique</label><input id="vvae" type="number" min="5" max="45" step="1" value="24"><span style="font-size:14px">km/h</span>
+  <label for="fond">Fond</label>
+  <select id="fond">
+    <option value="cyclosm">CyclOSM (vélo, RAVeL)</option>
+    <option value="osm">OpenStreetMap</option>
+  </select>
+  <button id="recalc" type="button" class="sec">Recalculer</button>
+  <button id="imprimer" type="button" class="sec">Imprimer / PDF</button>
+  <button id="testOverpass" type="button" class="sec">Tester Overpass</button>
+</div>
+<div id="etat" role="status">Chargement…</div>
+<div class="affiche">
+  <div class="titre"><h1>Distances et temps cyclables</h1><span id="nomCommune"></span></div>
+  <div id="carte" role="region" aria-label="Carte des distances et temps à vélo"></div>
+</div>
+
+<script>
+/* ================== Réglages ================== */
+const MAX_VILLAGES = 15;
+const NOMINATIM = "https://nominatim.openstreetmap.org/search";
+const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+const OVERPASS_DELAI = 60000;   // ms : délai maximum par serveur
+const BROUTER = "https://brouter.de/brouter";
+const PROFIL = "trekking";   // profil vélo standard de BRouter
+const COUL = { rouge: "#C8102E", orange: "#E8772E", nuit: "#14213D" };
+const FONDS = {
+  cyclosm: () => L.tileLayer("https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png", { maxZoom: 18, attribution: '<a href="https://www.cyclosm.org">CyclOSM</a> | © <a href="https://www.openstreetmap.org/copyright">contributeurs OpenStreetMap</a>' }),
+  osm: () => L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">contributeurs OpenStreetMap</a>' })
+};
+
+/* ================== Outils ================== */
+const $ = id => document.getElementById(id);
+const etat = t => { $("etat").textContent = t; };
+const pause = ms => new Promise(r => setTimeout(r, ms));
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+function kmEntre(a, b) {
+  const R = 6371, r = Math.PI / 180;
+  const d = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(d));
+}
+const vitesses = () => ({ cl: Math.max(1, +$("vcl").value || 14), vae: Math.max(1, +$("vvae").value || 24) });
+const minutes = (km, v) => Math.max(1, Math.round(km / v * 60));
+const fmtKm = km => km.toFixed(1).replace(".", ",") + " km";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ================== Nominatim / Overpass ================== */
+async function chercherCommunes(q) {
+  const r = await fetch(`${NOMINATIM}?format=jsonv2&limit=10&accept-language=fr&q=${encodeURIComponent(q)}`);
+  if (!r.ok) throw new Error("Nominatim HTTP " + r.status);
+  return (await r.json()).filter(x => x.osm_type === "relation" && x.category === "boundary" && x.type === "administrative");
+}
+// Interroge plusieurs serveurs en même temps et garde la première réponse valable.
+async function overpass(requete) {
+  const t0 = performance.now(), ctrls = [], erreurs = [];
+  const compteur = setInterval(() => etat(`Attente d’Overpass : ${Math.round((performance.now() - t0) / 1000)} s…`), 1000);
+  const essai = (url, attente) => new Promise((ok, ko) => setTimeout(async () => {
+    const hote = new URL(url).host, ctrl = new AbortController(); ctrls.push(ctrl);
+    const minuterie = setTimeout(() => ctrl.abort(), OVERPASS_DELAI);
+    try {
+      // GET : requête « simple » sans corps, la plus compatible avec Chrome mobile et les réseaux mobiles
+      const r = await fetch(url + "?data=" + encodeURIComponent(requete), { signal: ctrl.signal, cache: "no-store" });
+      if (!r.ok) throw new Error(`${hote} : HTTP ${r.status}${r.status === 429 ? " (trop de requêtes)" : r.status === 504 ? " (surchargé)" : ""}`);
+      const j = await r.json();
+      if (j.remark && /runtime error|timed out|out of memory/i.test(j.remark)) throw new Error(`${hote} : ${j.remark}`);
+      ok({ elements: j.elements, hote, secondes: (performance.now() - t0) / 1000 });
+    } catch (e) {
+      ko(e.name === "AbortError" ? new Error(`${hote} : pas de réponse après ${OVERPASS_DELAI / 1000} s`) : e.message.includes(hote) ? e : new Error(`${hote} : ${e.message}`));
+    } finally { clearTimeout(minuterie); }
+  }, attente));
+  try {
+    // les deux premiers serveurs tout de suite, le troisième après 10 s
+    return await Promise.any(OVERPASS.map((url, i) => essai(url, i < 2 ? 0 : 10000).catch(e => { erreurs.push(e.message); throw e; })));
+  } catch {
+    throw new Error("Overpass ne répond pas. " + erreurs.join(" · "));
+  } finally {
+    clearInterval(compteur);
+    ctrls.forEach(c => c.abort());
+  }
+}
+function lienTurbo(requete) {
+  return "https://overpass-turbo.eu/?Q=" + encodeURIComponent(requete) + "&R";
+}
+function assemblerAnneaux(ways) {
+  const eq = (a, b) => Math.abs(a[0] - b[0]) < 1e-7 && Math.abs(a[1] - b[1]) < 1e-7;
+  let segs = ways.map(w => w.geometry.map(p => [p.lat, p.lon]));
+  const anneaux = [];
+  while (segs.length) {
+    let r = segs.shift(), change = true;
+    while (change && !(r.length > 3 && eq(r[0], r[r.length - 1]))) {
+      change = false;
+      for (let i = 0; i < segs.length; i++) {
+        const s = segs[i], deb = r[0], fin = r[r.length - 1];
+        if (eq(fin, s[0])) r = r.concat(s.slice(1));
+        else if (eq(fin, s[s.length - 1])) r = r.concat(s.slice(0, -1).reverse());
+        else if (eq(deb, s[s.length - 1])) r = s.slice(0, -1).concat(r);
+        else if (eq(deb, s[0])) r = s.slice(1).reverse().concat(r);
+        else continue;
+        segs.splice(i, 1); change = true; break;
+      }
+    }
+    anneaux.push(r.map(([lat, lon]) => ({ lat, lon })));
+  }
+  return anneaux;
+}
+function dansPolygone(p, anneaux) {
+  let dedans = false;
+  for (const a of anneaux) for (let i = 0, j = a.length - 1; i < a.length; j = i++) {
+    const xi = a[i].lon, yi = a[i].lat, xj = a[j].lon, yj = a[j].lat;
+    if ((yi > p.lat) !== (yj > p.lat) && p.lon < (xj - xi) * (p.lat - yi) / (yj - yi) + xi) dedans = !dedans;
+  }
+  return dedans;
+}
+let dernierTurbo = null;
+async function chargerCommune(relId) {
+  const cache = store.get("cmd-donnees-" + relId);
+  if (cache && cache.v === 3) return cache;
+  etat("Lecture de la commune, des villages et des voisins dans OpenStreetMap…");
+  // Une seule requête, sans « around » ni calcul de centre (les deux opérations lentes),
+  // délai court pour rester prioritaire sur les serveurs publics.
+  const requete = `[out:json][timeout:25];
+rel(${relId})->.c;
+.c out geom;
+.c map_to_area->.a;
+node(area.a)[place~"^(city|town|village)$"];
+out;
+way(r.c)->.w;
+rel(bw.w)[boundary=administrative][admin_level~"^([7-9]|10)$"]->.n;
+.n out body;
+node(r.n:"admin_centre")->.ac;
+node(r.n:"label")->.lb;
+(.ac; .lb;);
+out;`;
+  dernierTurbo = lienTurbo(requete);
+  const { elements: el, hote, secondes } = await overpass(requete);
+  const rel = el.find(e => e.type === "relation" && e.id === relId);
+  if (!rel) throw new Error("Commune introuvable");
+  const niveau = rel.tags.admin_level;
+  const anneaux = assemblerAnneaux(rel.members.filter(m => m.type === "way" && m.geometry && m.role !== "inner"));
+  const centreId = (rel.members.find(m => m.type === "node" && m.role === "admin_centre") || {}).ref;
+  const noeuds = new Map(el.filter(e => e.type === "node").map(n => [n.id, n]));
+  const centresVoisins = new Set(el.filter(e => e.type === "relation" && e.id !== relId && e.tags && e.tags.admin_level === niveau).flatMap(r => (r.members || []).filter(m => m.type === "node" && m.role === "admin_centre").map(m => m.ref)));
+  const lieuxNodes = [...noeuds.values()].filter(n => n.tags && n.tags.place && n.tags.name);
+  const rang = n => ({ city: 3, town: 2, village: 1 }[n.tags.place] || 0) * 1e7 + (parseInt(n.tags.population) || 0);
+  let internes = lieuxNodes.filter(n => /^(city|town|village)$/.test(n.tags.place) && !centresVoisins.has(n.id) && dansPolygone(n, anneaux));
+  internes.sort((a, b) => (b.id === centreId) - (a.id === centreId) || rang(b) - rang(a));
+  internes = internes.slice(0, MAX_VILLAGES);
+  if (!internes.length) throw new Error("Aucun village trouvé dans cette commune");
+  const centre = internes.find(n => n.id === centreId) || internes[0];
+  // voisins = communes de même niveau qui partagent la limite ; leur point = admin_centre, sinon label
+  const voisins = el.filter(e => e.type === "relation" && e.id !== relId && e.tags && e.tags.admin_level === niveau).map(r => {
+    const m = (r.members || []);
+    const ref = (m.find(x => x.type === "node" && x.role === "admin_centre") || m.find(x => x.type === "node" && x.role === "label") || {}).ref;
+    const n = noeuds.get(ref);
+    return n ? { id: "v" + r.id, nom: r.tags["name:fr"] || r.tags.name, lat: n.lat, lon: n.lon } : null;
+  }).filter(Boolean);
+  const donnees = {
+    v: 3, relId, nom: rel.tags["name:fr"] || rel.tags.name, anneaux,
+    lieux: internes.map(n => ({ id: "n" + n.id, nom: n.tags["name:fr"] || n.tags.name, lat: n.lat, lon: n.lon, centre: n === centre })),
+    voisins, gares: [], overpass: { hote, secondes }
+  };
+  store.set("cmd-donnees-" + relId, donnees);
+  return donnees;
+}
+
+/* ================== Réseau ================== */
+function reseau(d) {
+  const lieux = d.lieux;
+  const liens = [];
+  for (let i = 0; i < lieux.length; i++) for (let j = i + 1; j < lieux.length; j++) {
+    // graphe des voisins relatifs : pas de 3e village plus proche des deux à la fois
+    const a = lieux[i], b = lieux[j], d = kmEntre(a, b);
+    if (!lieux.some((c, k) => k !== i && k !== j && Math.max(kmEntre(a, c), kmEntre(b, c)) < d)) liens.push({ a, b, interne: true });
+  }
+  const sorties = d.voisins.map(v => {
+    const o = lieux.reduce((best, l) => kmEntre(l, v) < kmEntre(best, v) ? l : best, lieux[0]);
+    return { a: o, b: v, interne: false };
+  });
+  return { overpass: d.overpass, nom: d.nom, relId: d.relId, anneaux: d.anneaux, lieux, voisins: d.voisins, liens, sorties };
+}
+const cle = l => l.a.id + "|" + l.b.id;
+
+/* ================== Carte ================== */
+const map = L.map("carte", { zoomSnap: 0.25, zoomControl: true });
+let fond = FONDS.cyclosm().addTo(map);
+L.control.scale({ imperial: false, position: "bottomleft", maxWidth: 160 }).addTo(map);
+const Nord = L.Control.extend({ options: { position: "topleft" }, onAdd() {
+  const d = L.DomUtil.create("div", "nord");
+  d.innerHTML = '<svg width="44" height="56" viewBox="0 0 44 56" role="img" aria-label="Nord"><text x="22" y="13" text-anchor="middle" font-size="14" font-weight="800" fill="#14213D">N</text><path d="M22 16 L30 50 L22 43 L14 50 Z" fill="#14213D" stroke="#fff" stroke-width="1.5"/><path d="M22 16 L22 43 L14 50 Z" fill="#fff" stroke="#14213D" stroke-width="1.2"/></svg>';
+  return d; } });
+new Nord().addTo(map);
+const Legende = L.Control.extend({ options: { position: "topright" }, onAdd() {
+  const d = L.DomUtil.create("div", "legende"); d.id = "legende"; L.DomEvent.disableClickPropagation(d); return d; } });
+new Legende().addTo(map);
+
+const fixe = L.layerGroup().addTo(map);      // contour, masque, traits, points
+const mobile = L.layerGroup().addTo(map);    // étiquettes et pointes (recalculées au zoom)
+let M = null, KM = {}, SRC = {}, profilActif = "trekking";
+
+function legende() {
+  const v = vitesses();
+  $("legende").innerHTML = `<h2>Légende</h2>
+  <div class="l"><span class="sw" style="height:12px;border:3px solid ${COUL.rouge};border-radius:2px"></span>Limite de la commune</div>
+  <div class="l"><span class="sw" style="height:0;border-top:4px solid ${COUL.orange}"></span>Liaison vers un village ou une commune voisine</div>
+  <div class="l"><span class="village" style="font-size:11px;padding:1px 5px">Village</span>Centre de village</div>
+  <div class="l"><span class="dist" style="padding:0 4px"><span class="km" style="font-size:11px">3,5 km</span></span>Distance à vélo</div>
+  <div class="l"><b class="cl">15 min</b>&nbsp;Vélo classique (${v.cl} km/h)</div>
+  <div class="l"><b class="vae">9 min</b>&nbsp;Vélo électrique (${v.vae} km/h)</div>
+  <div style="margin-top:4px;color:#3B4A60;font-size:11px">${$("fond").value === "cyclosm" ? "Fond CyclOSM : pistes cyclables et RAVeL en bleu, routes en couleurs selon leur importance." : "Fond OpenStreetMap standard."}<br>Distances : BRouter, profil vélo standard.</div>`;
+}
+
+function dessinerFixe() {
+  fixe.clearLayers();
+  const rings = M.anneaux.map(r => r.map(p => [p.lat, p.lon]));
+  // voile blanc hors commune pour faire ressortir le territoire
+  L.polygon([[[-89, -179], [-89, 179], [89, 179], [89, -179]], ...rings], { stroke: false, fillColor: "#fff", fillOpacity: 0.45, interactive: false }).addTo(fixe);
+  L.polygon(rings, { color: COUL.rouge, weight: 3.5, fill: false, interactive: false }).addTo(fixe);
+  for (const l of M.liens)
+    L.polyline([[l.a.lat, l.a.lon], [l.b.lat, l.b.lon]], { color: COUL.orange, weight: 4, opacity: 0.95, interactive: false }).addTo(fixe);
+  for (const l of M.lieux)
+    L.circleMarker([l.lat, l.lon], { radius: l.centre ? 7 : 5, color: "#fff", weight: 2, fillColor: COUL.nuit, fillOpacity: 1, interactive: false }).addTo(fixe);
+}
+
+function etiquette(html, cls) { return L.divIcon({ className: "etq", html: `<div class="${cls}">${html}</div>`, iconSize: [0, 0] }); }
+const mesureur = document.createElement("div");
+mesureur.style.cssText = "position:absolute;left:-9999px;top:0;visibility:hidden";
+document.body.appendChild(mesureur);
+function taille(html, cls) { mesureur.innerHTML = `<div class="${cls}" style="display:inline-block">${html}</div>`; const e = mesureur.firstChild; return { w: e.offsetWidth + 4, h: e.offsetHeight + 4 }; }
+
+function dessinerMobile() {
+  mobile.clearLayers();
+  if (!M) return;
+  const v = vitesses();
+  const P = p => map.latLngToContainerPoint([p.lat, p.lon]);
+  const tz = map.getSize();
+  const boites = [];
+  const legEl0 = $("legende").getBoundingClientRect(), mapEl0 = $("carte").getBoundingClientRect();
+  const leg = { x: legEl0.left - mapEl0.left - 8, y: legEl0.top - mapEl0.top - 8, w: legEl0.width + 16, h: legEl0.height + 16 };
+  const dansR = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+  const cadreF = { x: 70, y: 36, w: tz.x - 140, h: tz.y - 72 };
+  for (const s of M.sorties) {
+    const a = P(s.a), b = P(s.b);
+    let t = 1;
+    if (!dansR(b, cadreF)) {
+      const dx = b.x - a.x, dy = b.y - a.y; let tm = 1;
+      if (dx > 0) tm = Math.min(tm, (cadreF.x + cadreF.w - a.x) / dx); if (dx < 0) tm = Math.min(tm, (cadreF.x - a.x) / dx);
+      if (dy > 0) tm = Math.min(tm, (cadreF.y + cadreF.h - a.y) / dy); if (dy < 0) tm = Math.min(tm, (cadreF.y - a.y) / dy);
+      t = Math.max(0, tm);
+    }
+    let fin = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    while (t > 0.05 && dansR(fin, leg)) { t -= 0.03; fin = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
+    if (Math.hypot(fin.x - a.x, fin.y - a.y) < 50) { const d = Math.hypot(b.x - a.x, b.y - a.y) || 1; fin = { x: a.x + (b.x - a.x) / d * 50, y: a.y + (b.y - a.y) / d * 50 }; }
+    s.fin = fin;
+    L.polyline([map.containerPointToLatLng([a.x, a.y]), map.containerPointToLatLng([fin.x, fin.y])], { color: COUL.orange, weight: 4, opacity: 0.95, interactive: false }).addTo(mobile);
+  }
+  const Q = (l, cote) => cote === "b" && !l.interne ? l.fin : P(l[cote]);
+  const segs = [...M.liens, ...M.sorties].map(l => { const a = Q(l, "a"), b = Q(l, "b"); return [a.x, a.y, b.x, b.y]; });
+  const croise = (a, b, c, d) => { const o = (p, q, r) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])); return o(a, b, c) !== o(a, b, d) && o(c, d, a) !== o(c, d, b); };
+  const touche = (r, s) => { const p = [s[0], s[1]], q = [s[2], s[3]], inn = ([x, y]) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; if (inn(p) || inn(q)) return true; const c = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]]; return [0, 1, 2, 3].some(i => croise(p, q, c[i], c[(i + 1) % 4])); };
+  const rec = (a, b) => Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  boites.push(leg, { x: 0, y: 0, w: 60, h: 140 }, { x: 0, y: tz.y - 40, w: 180, h: 40 });
+  function cout(r, ignore) {
+    let s = 0;
+    s += 50 * (Math.max(0, 4 - r.x) + Math.max(0, r.x + r.w - tz.x + 4) + Math.max(0, 4 - r.y) + Math.max(0, r.y + r.h - tz.y + 4));
+    for (const b of boites) s += rec(r, b) * 2;
+    segs.forEach((sg, i) => { if (i !== ignore && touche(r, sg)) s += 40; });
+    return s;
+  }
+  function poserAutour(pt, html, cls, prefAng, rayon) {
+    const { w, h } = taille(html, cls); let best = null;
+    for (const dr of [0, 8, 18]) for (let i = 0; i < 16; i++) {
+      const ang = prefAng + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * Math.PI / 8, R = rayon + dr;
+      const cx = pt.x + Math.cos(ang) * (R + w / 2 * Math.abs(Math.cos(ang))), cy = pt.y + Math.sin(ang) * (R + h / 2 * Math.abs(Math.sin(ang)));
+      const r = { x: cx - w / 2, y: cy - h / 2, w, h };
+      const s = cout(r, -1) + Math.ceil(i / 2) * 3 + dr;
+      if (!best || s < best.s) best = { s, cx, cy, r };
+      if (s === 0) break;
+    }
+    boites.push(best.r);
+    L.marker(map.containerPointToLatLng([best.cx, best.cy]), { icon: etiquette(html, cls), interactive: false, keyboard: false }).addTo(mobile);
+  }
+  // points des villages comme obstacles
+  for (const l of M.lieux) { const p = P(l); boites.push({ x: p.x - 8, y: p.y - 8, w: 16, h: 16 }); }
+  // pointes de flèche vers les voisins
+  for (const s of M.sorties) {
+    const a = P(s.a), b = s.fin, ang = Math.atan2(b.y - a.y, b.x - a.x), L1 = 16, W = 7;
+    const p1 = [b.x - L1 * Math.cos(ang) + W * Math.sin(ang), b.y - L1 * Math.sin(ang) - W * Math.cos(ang)];
+    const p2 = [b.x - L1 * Math.cos(ang) - W * Math.sin(ang), b.y - L1 * Math.sin(ang) + W * Math.cos(ang)];
+    L.polygon([map.containerPointToLatLng([b.x, b.y]), map.containerPointToLatLng(p1), map.containerPointToLatLng(p2)], { stroke: false, fillColor: COUL.orange, fillOpacity: 1, interactive: false }).addTo(mobile);
+  }
+  // 1) villages (centre d'abord)
+  const tous = [...M.liens, ...M.sorties];
+  for (const l of [...M.lieux].sort((a, b) => b.centre - a.centre)) {
+    const p = P(l); let sx = 0, sy = 0;
+    for (const e of tous) { const o = e.a === l ? e.b : e.b === l ? e.a : null; if (!o) continue; const q = P(o), d = Math.hypot(q.x - p.x, q.y - p.y) || 1; sx += (q.x - p.x) / d; sy += (q.y - p.y) / d; }
+    poserAutour(p, esc(l.nom), "village" + (l.centre ? " centre" : ""), Math.hypot(sx, sy) < 0.3 ? -Math.PI / 2 : Math.atan2(-sy, -sx), 8);
+  }
+  // 2) communes voisines, au bout des flèches
+  for (const s of M.sorties) { const a = P(s.a), b = s.fin; poserAutour(b, esc(s.b.nom), "voisin", Math.atan2(b.y - a.y, b.x - a.x), 6); }
+  // 3) distances et temps : glissent le long du trait
+  tous.forEach((l, idx) => {
+    const k = KM[cle(l)] ?? kmEntre(l.a, l.b) * 1.25, html = `<div class="km">${fmtKm(k)}</div><div class="t"><span class="cl">${minutes(k, v.cl)} min</span> · <span class="vae">${minutes(k, v.vae)} min</span></div>`;
+    const cls = "dist" + (SRC[cle(l)] === "brouter" ? "" : " estime");
+    const { w, h } = taille(html, cls), a = Q(l, "a"), b = Q(l, "b");
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1, nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+    const dec = Math.abs(nx) * (w / 2 + 5) + Math.abs(ny) * (h / 2 + 5);
+    let best = null;
+    for (const f of [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82]) for (const o of [0, 1, -1]) {
+      const cx = a.x + (b.x - a.x) * f + o * dec * nx, cy = a.y + (b.y - a.y) * f + o * dec * ny, r = { x: cx - w / 2, y: cy - h / 2, w, h };
+      const s = cout(r, idx) + Math.abs(f - 0.5) * 30 + (o ? 8 : 0);
+      if (!best || s < best.s) best = { s, cx, cy, r };
+      if (s === 0) break;
+    }
+    boites.push(best.r);
+    L.marker(map.containerPointToLatLng([best.cx, best.cy]), { icon: etiquette(html, cls), interactive: false, keyboard: false }).addTo(mobile);
+  });
+}
+map.on("moveend resize", () => dessinerMobile());
+
+function cadrer() {
+  const pts = M.anneaux.flat().map(p => [p.lat, p.lon]);
+  const w = $("carte").clientWidth;
+  map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [90, 70], paddingBottomRight: [Math.min(230, w * 0.28), 70] });
+}
+
+/* ================== BRouter ================== */
+async function brouterKm(a, b, profil) {
+  const r = await fetch(`${BROUTER}?lonlats=${a.lon},${a.lat}|${b.lon},${b.lat}&profile=${profil}&alternativeidx=0&format=geojson`);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return Number((await r.json()).features[0].properties["track-length"]) / 1000;
+}
+let jeton = 0;
+async function calculer(profil, forcer) {
+  const moi = ++jeton; profilActif = profil;
+  const troncons = [...M.liens, ...M.sorties];
+  KM = {}; SRC = {};
+  for (const l of troncons) { KM[cle(l)] = kmEntre(l.a, l.b) * 1.25; SRC[cle(l)] = "estimation"; }
+  const ck = `cmv-km-${M.relId}-${profil}`, memo = (!forcer && store.get(ck)) || {};
+  for (const k in memo) if (k in KM) { KM[k] = memo[k]; SRC[k] = "brouter"; }
+  legende(); dessinerMobile();
+  let erreurs = 0, i = 0;
+  for (const l of troncons) {
+    i++; const k = cle(l);
+    if (SRC[k] === "brouter") continue;
+    if (moi !== jeton) return;
+    etat(`${M.nom} : calcul BRouter ${i}/${troncons.length} (${l.a.nom} – ${l.b.nom})… Cadre pointillé = distance encore estimée.`);
+    try { KM[k] = await brouterKm(l.a, l.b, profil); SRC[k] = "brouter"; memo[k] = KM[k]; store.set(ck, memo); } catch { erreurs++; }
+    if (moi !== jeton) return;
+    dessinerMobile();
+    await pause(350);
+  }
+  const osm = M.overpass ? ` Données OpenStreetMap reçues en ${M.overpass.secondes.toFixed(1).replace(".", ",")} s (${M.overpass.hote}).` : "";
+  etat((erreurs ? `${M.nom} : ${erreurs} distance(s) non calculée(s) par BRouter (cadre pointillé = estimation).`
+               : `${M.nom} : ${M.lieux.length} villages, ${M.sorties.length} communes voisines, distances BRouter (profil vélo standard).`) + osm);
+}
+
+/* ================== Interface ================== */
+async function ouvrir(relId) {
+  $("resultats").innerHTML = "";
+  try {
+    const d = window.DONNEES_TEST || await chargerCommune(relId);
+    M = reseau(d);
+    $("nomCommune").textContent = M.nom;
+    document.title = `Distances et temps cyclables – ${M.nom}`;
+    try { const u = new URL(location.href); u.searchParams.set("rel", relId); u.searchParams.delete("q"); history.replaceState(null, "", u); } catch {}
+    KM = {}; SRC = {}; legende(); dessinerFixe(); cadrer();
+    await calculer(PROFIL, false);
+  } catch (e) {
+    etat("Erreur : " + e.message);
+    if (dernierTurbo) {
+      const p = document.createElement("a"); p.href = dernierTurbo; p.target = "_blank"; p.rel = "noopener";
+      p.textContent = " Tester la même requête dans Overpass Turbo";
+      $("etat").appendChild(p);
+    }
+  }
+}
+$("recherche").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const q = $("q").value.trim(); if (!q) return;
+  etat("Recherche…"); $("resultats").innerHTML = "";
+  try {
+    const res = await chercherCommunes(q);
+    if (!res.length) { etat("Aucune commune trouvée. Essayez avec le pays, ex. « Courcelles, Belgique »."); return; }
+    if (res.length === 1) return ouvrir(res[0].osm_id);
+    etat("Choisissez la commune :");
+    for (const r of res) {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = r.display_name;
+      b.addEventListener("click", () => ouvrir(r.osm_id)); $("resultats").appendChild(b);
+    }
+  } catch (e) { etat("Erreur de recherche : " + e.message); }
+});
+$("recalc").addEventListener("click", () => M && calculer(PROFIL, true));
+["vcl", "vvae"].forEach(id => $(id).addEventListener("input", () => { if (M) { legende(); dessinerMobile(); } }));
+$("fond").addEventListener("change", () => { map.removeLayer(fond); fond = FONDS[$("fond").value]().addTo(map); fond.bringToBack(); legende(); });
+// Diagnostic : petite requête vers chaque serveur, en GET puis en POST, avec le temps de réponse
+$("testOverpass").addEventListener("click", async () => {
+  const mini = "[out:json][timeout:10];node(1);out;";
+  const lignes = [];
+  const mesurer = async (url, mode) => {
+    const t0 = performance.now(), ctrl = new AbortController(), m = setTimeout(() => ctrl.abort(), 20000);
+    try {
+      const r = mode === "GET"
+        ? await fetch(url + "?data=" + encodeURIComponent(mini), { signal: ctrl.signal, cache: "no-store" })
+        : await fetch(url, { method: "POST", signal: ctrl.signal, body: "data=" + encodeURIComponent(mini), headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+      await r.text();
+      return `${mode} ${r.ok ? "OK" : "HTTP " + r.status} en ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+    } catch (e) { return `${mode} ${e.name === "AbortError" ? "aucune réponse en 20 s" : "échec (" + e.message + ")"}`; }
+    finally { clearTimeout(m); }
+  };
+  for (const url of OVERPASS) {
+    const hote = new URL(url).host;
+    etat(`Test de ${hote}…`);
+    lignes.push(`${hote} : ${await mesurer(url, "GET")} · ${await mesurer(url, "POST")}`);
+  }
+  etat("Test Overpass — " + lignes.join(" | "));
+});
+$("imprimer").addEventListener("click", async () => {
+  document.body.classList.add("impression");
+  etat("Préparation de l’impression…");
+  window.print();
+});
+window.addEventListener("beforeprint", () => { map.invalidateSize(); if (M) { cadrer(); dessinerMobile(); } });
+window.addEventListener("afterprint", () => { map.invalidateSize(); if (M) { cadrer(); dessinerMobile(); } etat(M ? M.nom : ""); });
+
+(async () => {
+  const p = new URLSearchParams(location.search);
+  if (window.DONNEES_TEST) return ouvrir(window.DONNEES_TEST.relId);
+  if (p.get("rel")) return ouvrir(Number(p.get("rel")));
+  const q = p.get("q") || "Courcelles, Hainaut, Belgique";
+  $("q").value = q.split(",")[0];
+  try {
+    const res = await chercherCommunes(q);
+    if (res.length) return ouvrir(res[0].osm_id);
+    etat("Cherchez une commune ci-dessus.");
+  } catch (e) { etat("Cherchez une commune ci-dessus. (" + e.message + ")"); }
+})();
+</script>
+</body>
+</html>
