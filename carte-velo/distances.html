@@ -24,6 +24,9 @@
   .titre { background: #fff; border: 3px solid var(--nuit); border-bottom: none; padding: 10px 16px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
   .titre h1 { margin: 0; font-size: clamp(20px, 4vw, 30px); color: var(--nuit); }
   .titre span { font-size: clamp(14px, 2.6vw, 20px); font-weight: 600; color: var(--rouge); }
+  .titre small { margin-left: auto; font-size: 12px; color: #3B4A60; }
+  .version { max-width: 960px; margin: 0 auto; padding: 0 12px 8px; font-size: 11px; color: #5A6578; }
+  @media print { .version { display: none; } }
   #carte { width: 100%; aspect-ratio: 1 / 1.05; border: 3px solid var(--nuit); background: #dde; }
   /* étiquettes */
   .etq { background: none; border: none; }
@@ -71,8 +74,9 @@
   <button id="testOverpass" type="button" class="sec">Tester Overpass</button>
 </div>
 <div id="etat" role="status">Chargement…</div>
+<div class="version">Version de la page : 26/11/2026 22:54</div>
 <div class="affiche">
-  <div class="titre"><h1>Distances et temps cyclables</h1><span id="nomCommune"></span></div>
+  <div class="titre"><h1>Distances et temps cyclables</h1><span id="nomCommune"></span><small id="dateCarte"></small></div>
   <div id="carte" role="region" aria-label="Carte des distances et temps à vélo"></div>
 </div>
 
@@ -80,7 +84,7 @@
 /* ================== Réglages ================== */
 const MAX_VILLAGES = 15;
 const NOMINATIM = "https://nominatim.openstreetmap.org/search";
-const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+const OVERPASS = ["https://overpass-api.de/api/interpreter"];
 const OVERPASS_DELAI = 60000;   // ms : délai maximum par serveur
 const BROUTER = "https://brouter.de/brouter";
 const PROFIL = "trekking";   // profil vélo standard de BRouter
@@ -134,7 +138,7 @@ async function overpass(requete) {
   }, attente));
   try {
     // les deux premiers serveurs tout de suite, le troisième après 10 s
-    return await Promise.any(OVERPASS.map((url, i) => essai(url, i < 2 ? 0 : 10000).catch(e => { erreurs.push(e.message); throw e; })));
+    return await Promise.any(OVERPASS.map((url, i) => essai(url, 0).catch(e => { erreurs.push(e.message); throw e; })));
   } catch {
     throw new Error("Overpass ne répond pas. " + erreurs.join(" · "));
   } finally {
@@ -425,6 +429,8 @@ async function ouvrir(relId) {
     const d = window.DONNEES_TEST || await chargerCommune(relId);
     M = reseau(d);
     $("nomCommune").textContent = M.nom;
+    const maintenant = new Date();
+    $("dateCarte").textContent = "Carte créée le " + maintenant.toLocaleDateString("fr-BE", { day: "2-digit", month: "2-digit", year: "numeric" }) + " à " + maintenant.toLocaleTimeString("fr-BE", { hour: "2-digit", minute: "2-digit" });
     document.title = `Distances et temps cyclables – ${M.nom}`;
     try { const u = new URL(location.href); u.searchParams.set("rel", relId); u.searchParams.delete("q"); history.replaceState(null, "", u); } catch {}
     KM = {}; SRC = {}; legende(); dessinerFixe(); cadrer();
