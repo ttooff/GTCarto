@@ -74,7 +74,7 @@
   <button id="testOverpass" type="button" class="sec">Tester Overpass</button>
 </div>
 <div id="etat" role="status">Chargement…</div>
-<div class="version">Version de la page : 26/11/2026 22:54</div>
+<div class="version">Version de la page : 28/11/2026 10:18</div>
 <div class="affiche">
   <div class="titre"><h1>Distances et temps cyclables</h1><span id="nomCommune"></span><small id="dateCarte"></small></div>
   <div id="carte" role="region" aria-label="Carte des distances et temps à vélo"></div>
@@ -126,8 +126,8 @@ async function overpass(requete) {
     const hote = new URL(url).host, ctrl = new AbortController(); ctrls.push(ctrl);
     const minuterie = setTimeout(() => ctrl.abort(), OVERPASS_DELAI);
     try {
-      // GET : requête « simple » sans corps, la plus compatible avec Chrome mobile et les réseaux mobiles
-      const r = await fetch(url + "?data=" + encodeURIComponent(requete), { signal: ctrl.signal, cache: "no-store" });
+      // POST en formulaire, exactement comme Overpass Turbo
+      const r = await fetch(url, { method: "POST", signal: ctrl.signal, body: "data=" + encodeURIComponent(requete), headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" } });
       if (!r.ok) throw new Error(`${hote} : HTTP ${r.status}${r.status === 429 ? " (trop de requêtes)" : r.status === 504 ? " (surchargé)" : ""}`);
       const j = await r.json();
       if (j.remark && /runtime error|timed out|out of memory/i.test(j.remark)) throw new Error(`${hote} : ${j.remark}`);
